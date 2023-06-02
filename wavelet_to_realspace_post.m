@@ -1,4 +1,4 @@
-function [X,Y,ZZ,time] = wavelet_to_realspace_post(filename,max_level)
+function [X,Y,ZZ,time,hash_table,E,phi] = wavelet_to_realspace_post(filename,max_level)
 
   
     deg = h5read(filename,'/degree');
@@ -6,6 +6,7 @@ function [X,Y,ZZ,time] = wavelet_to_realspace_post(filename,max_level)
         max_level = h5read(filename,'/max_level');
     end
     time = h5read(filename,'/time');
+    dof = h5read(filename,'/dof');
 
     % x-dim data
     x_min = h5read(filename,'/dim0_min'); 
@@ -28,7 +29,7 @@ function [X,Y,ZZ,time] = wavelet_to_realspace_post(filename,max_level)
     fprintf('---- Solution Data ----------------------------\n');
     fprintf('-- time = %5.4f\n',time);
     fprintf('-- degree = %d\n',deg);
-    fprintf('-- dof = %5d\n',h5read(filename,'/dof'))
+    fprintf('-- dof = %5d\n',dof)
     fprintf('-- max-level = %4d\n',max_level);
     fprintf('-- dim0 --\n');
     fprintf(' [min,max] = [%3.2f,%3.2f]\n',x_min,x_max)
@@ -37,6 +38,9 @@ function [X,Y,ZZ,time] = wavelet_to_realspace_post(filename,max_level)
     fprintf(' [min,max] = [%3.2f,%3.2f]\n',y_min,y_max)
     fprintf(' lev = %2d\n',lev_y);
     
+    %Get eletric field
+    E = h5read(filename,'/Efield');
+    phi = h5read(filename,'/phi');
 
 
     element_mat = reshape(h5read(filename,'/elements'),4,[]);
@@ -57,9 +61,19 @@ function [X,Y,ZZ,time] = wavelet_to_realspace_post(filename,max_level)
     soln = h5read(filename,'/soln');
     %soln = [1;0;0;0;0;0;0;0;0];
 
+    hash_table.elements_idx = zeros(1,active);
+    hash_table.elements.lev_p1 = sparse([],[],[],4^max_level,2);
+    hash_table.elements.pos_p1 = sparse([],[],[],4^max_level,2);
+
     %Convert to [wave_1x,wave_2x,..] \otimes [wave_1y,wave_2y,...]
     wave_space = zeros(2^(2*max_level)*ele_dof,1);
+
+    hash_table.elements_idx = idx;
+    hash_table.elements.lev_p1(idx,:) = [dim0_coords_lev'+1,dim1_coords_lev'+1];
+    hash_table.elements.pos_p1(idx,:) = [dim0_coords_pos'+1,dim1_coords_pos'+1];
+    
     for i=1:active
+        %act_idx = index_x(i) + 2^max_level*index_y(i);
         for degx = 1:deg
             for degy = 1:deg
                 %wave_space((idx(i)-1)*ele_dof+(degx-1)*deg+degy) = soln((i-1)*ele_dof+(degx-1)*deg+degy);
@@ -98,7 +112,7 @@ function [X,Y,ZZ,time] = wavelet_to_realspace_post(filename,max_level)
 
     X = zeros(deg*2^max_level,1);
     for i=1:2^max_level
-        X(deg*(i-1)+1:deg*i) = dx/2*q + (x(i)+y(i+1))/2;
+        X(deg*(i-1)+1:deg*i) = dx/2*q + (x(i)+x(i+1))/2;
     end
     Y = zeros(deg*2^max_level,1);
     for j=1:2^max_level
@@ -116,9 +130,17 @@ function [X,Y,ZZ,time] = wavelet_to_realspace_post(filename,max_level)
 
 
     %%Plot
-    surf(XX,YY,ZZ,'EdgeColor','interp'); view([0 90]);
+    h = surf(XX,YY,ZZ,'EdgeColor','none');
+    view([0 90]); 
+    %caxis([-0.05 0.35]);
+    %zlim([-0.05 0.35]); 
     xlim([x_min,x_max]); ylim([y_min,y_max]); colorbar;
-    title(sprintf('time = %5.4f',time));
+    %title(sprintf('time = %5.4f, dof = %d, maxlev = %d, lev = [%d,%d], thresh = %2.1e',time,dof,max_level,lev_x,lev_y,1e-6));
+    coord = get_my_realspace_coord([x_min,x_min],[x_max,x_max],hash_table);
+    z_max = max(max(get(h,'ZData')));
+    hold on
+    line(coord(:,1),coord(:,2),0*coord(:,1)+z_max,'Color','k','LineStyle',"none",'Marker',".",'MarkerSize',4);
+    hold off
 
 
 end
