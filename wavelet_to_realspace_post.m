@@ -1,6 +1,5 @@
 function [X,Y,ZZ,time,hash_table,E,phi] = wavelet_to_realspace_post(filename,max_level)
-
-  
+    ndims = h5read(filename,'/ndims');
     deg = h5read(filename,'/degree');
     if nargin == 1
         max_level = h5read(filename,'/max_level');
@@ -8,139 +7,120 @@ function [X,Y,ZZ,time,hash_table,E,phi] = wavelet_to_realspace_post(filename,max
     time = h5read(filename,'/time');
     dof = h5read(filename,'/dof');
 
-    % x-dim data
-    x_min = h5read(filename,'/dim0_min'); 
-    x_max = h5read(filename,'/dim0_max');
-    lev_x = h5read(filename,'/dim0_level');
-    dx = (x_max-x_min)/2.0^double(max_level);
-    x = x_min:dx:x_max;
-    [FMWT_x,~] = OperatorTwoScale_wavelet2(double(deg),max_level);
-    % y-dim data
-    y_min = h5read(filename,'/dim1_min');
-    y_max = h5read(filename,'/dim1_max');
-    lev_y = h5read(filename,'/dim1_level');
-    dy = (y_max-y_min)/2.0^double(max_level);
-    y = y_min:dy:y_max;
-    [FMWT_y,~] = OperatorTwoScale_wavelet2(double(deg),max_level);
+    for d=1:ndims
+        asgdata(d).min  = h5read(filename,sprintf('/dim%1d_min',d-1)); 
+        asgdata(d).max  = h5read(filename,sprintf('/dim%1d_max',d-1)); 
+        asgdata(d).lev  = h5read(filename,sprintf('/dim%1d_level',d-1));
+        assert(asgdata(d).lev <= max_level);
+        asgdata(d).dx   = (asgdata(d).max-asgdata(d).min)/2.0^double(max_level);
+        asgdata(d).vec  = asgdata(d).min:asgdata(d).dx:asgdata(d).max;
+        asgdata(d).FMWT = OperatorTwoScale_wavelet2(double(deg),max_level);
+    end
 
-    assert(lev_x <= max_level);
-    assert(lev_y <= max_level);
-
-    fprintf('---- Solution Data ----------------------------\n');
-    fprintf('-- time = %5.4f\n',time);
-    fprintf('-- degree = %d\n',deg);
-    fprintf('-- dof = %5d\n',dof)
-    fprintf('-- max-level = %4d\n',max_level);
-    fprintf('-- dim0 --\n');
-    fprintf(' [min,max] = [%3.2f,%3.2f]\n',x_min,x_max)
-    fprintf(' lev = %2d\n',lev_x);
-    fprintf('-- dim1 --\n');
-    fprintf(' [min,max] = [%3.2f,%3.2f]\n',y_min,y_max)
-    fprintf(' lev = %2d\n',lev_y);
+%     fprintf('---- Solution Data ----------------------------\n');
+%     fprintf('-- time = %5.4f\n',time);
+%     fprintf('-- degree = %d\n',deg);
+%     fprintf('-- dof = %5d\n',dof)
+%     fprintf('-- max-level = %4d\n',max_level);
+%     fprintf('-- dim0 --\n');
+%     fprintf(' [min,max] = [%3.2f,%3.2f]\n',x_min,x_max)
+%     fprintf(' lev = %2d\n',lev_x);
+%     fprintf('-- dim1 --\n');
+%     fprintf(' [min,max] = [%3.2f,%3.2f]\n',y_min,y_max)
+%     fprintf(' lev = %2d\n',lev_y);
     
     %Get eletric field
     E = h5read(filename,'/Efield');
     phi = h5read(filename,'/phi');
 
 
-    element_mat = reshape(h5read(filename,'/elements'),4,[]);
-    %element_mat = [1;0;0;0];
-    dim0_coords_lev = element_mat(1,:);
-    dim1_coords_lev = element_mat(2,:);
-    dim0_coords_pos = element_mat(3,:);
-    dim1_coords_pos = element_mat(4,:);
+    element_mat = reshape(h5read(filename,'/elements'),2*ndims,[]);
+    for d=1:ndims
+        asgdata(d).coords_lev = element_mat(d,:);
+        asgdata(d).coords_pos = element_mat(d+ndims,:);
+        asgdata(d).index      = lev_cell_to_1D_index(asgdata(d).coords_lev,asgdata(d).coords_pos);
+    end
 
-    active = numel(dim0_coords_lev);
-
-    index_x = lev_cell_to_1D_index(dim0_coords_lev,dim0_coords_pos);
-    index_y = lev_cell_to_1D_index(dim1_coords_lev,dim1_coords_pos);
-
-    idx = (index_x-1)*2^double(max_level) + index_y;
-    ele_dof = deg^2;
+    active = numel(asgdata(1).coords_lev);
+    idx = asgdata(ndims).index;
+    for d=ndims-1:-1:1
+        idx = idx + (asgdata(d).index-1)*double(2^((ndims-d)*max_level));
+    end
+    ele_dof = deg^ndims;
     
     soln = h5read(filename,'/soln');
-    %soln = [1;0;0;0;0;0;0;0;0];
 
+    %Hashtable creation
     hash_table.elements_idx = zeros(1,active);
-    hash_table.elements.lev_p1 = sparse([],[],[],4^max_level,2);
-    hash_table.elements.pos_p1 = sparse([],[],[],4^max_level,2);
-
-    %Convert to [wave_1x,wave_2x,..] \otimes [wave_1y,wave_2y,...]
-    wave_space = zeros(2^(2*max_level)*ele_dof,1);
-
+    hash_table.elements.lev_p1 = sparse([],[],[],2^(ndims*max_level),ndims);
+    hash_table.elements.pos_p1 = sparse([],[],[],2^(ndims*max_level),ndims);
     hash_table.elements_idx = idx;
-    hash_table.elements.lev_p1(idx,:) = [dim0_coords_lev'+1,dim1_coords_lev'+1];
-    hash_table.elements.pos_p1(idx,:) = [dim0_coords_pos'+1,dim1_coords_pos'+1];
-    
-    for i=1:active
-        %act_idx = index_x(i) + 2^max_level*index_y(i);
-        for degx = 1:deg
-            for degy = 1:deg
-                %wave_space((idx(i)-1)*ele_dof+(degx-1)*deg+degy) = soln((i-1)*ele_dof+(degx-1)*deg+degy);
-                wave_space(((index_x(i)-1)*deg+degx-1)*2^max_level*deg+(index_y(i)-1)*deg+degy)= soln((i-1)*ele_dof+(degx-1)*deg+degy);
-                %wave_space((idx(i)-1)*ele_dof+1:idx(i)*ele_dof) = soln((i-1)*ele_dof+1:i*ele_dof);
-            end
-        end
-    end
-    %wave_space = zeros(size(wave_space)); wave_space(2^max_level*deg+1) = 1;
-    %Convert from wavelet space to realspace
-    real_space = reshape(FMWT_y'*reshape(wave_space,[],2^max_level*deg)*FMWT_x,[],1);
-    real_space_cell = zeros(size(real_space));
-    %Convert to cell ordered vector
-    count = 1;
-    for i=1:2^max_level
-        for j=1:2^max_level
-            for degx=1:deg
-                for degy=1:deg
-                    %Create appropriate index
-                    idx_i = (i-1)*deg+degx;
-                    idx_j = (j-1)*deg+degy;
-                    real_space_cell(count) = real_space((idx_i-1)*2^max_level*deg+idx_j);
-                    count = count + 1;
-                end
-            end
-        end
+    for d=1:ndims
+        hash_table.elements.lev_p1(idx,d) = asgdata(d).coords_lev'+1;
+        hash_table.elements.pos_p1(idx,d) = asgdata(d).coords_pos'+1;
     end
 
-    %Legendre polynomial values
+    %Tensor time
+    wave_tensor = tensor(@zeros,ones(1,ndims)*double(2^max_level*deg));
+
+    dim_idx = cell(1,ndims);
+    for i=1:active
+        for d=1:ndims
+            %Reverse order is due to reverse kron storage
+            dp = ndims-d+1;
+            dim_idx{d} = (asgdata(dp).index(i)-1)*double(deg)+1:asgdata(dp).index(i)*double(deg);
+        end
+        wave_tensor(dim_idx{:}) = reshape(soln((i-1)*ele_dof+1:i*ele_dof),ones(1,ndims)*double(deg));
+    end
+
+    % Translate from wavelets to realspace
+    FT = {asgdata(:).FMWT};
+    for d=1:ndims; FT{d} = FT{d}'; end
+    real_tensor = ttm(wave_tensor,FT,1:ndims);
+
+
+
+    %Legendre polynomial values for modal to nodal transformation
     [q,~] = lgwt(double(deg),-1,1); q = q';
     L = zeros(deg,deg);
     for i=1:deg
         tmp = legendre(i-1,q,'norm');
-        L(i,:) = tmp(1,:)*sqrt(2/dx);
+        L(i,:) = tmp(1,:);
     end
 
-    X = zeros(deg*2^max_level,1);
-    for i=1:2^max_level
-        X(deg*(i-1)+1:deg*i) = dx/2*q + (x(i)+x(i+1))/2;
-    end
-    Y = zeros(deg*2^max_level,1);
-    for j=1:2^max_level
-        Y(deg*(j-1)+1:deg*j) = dy/2*q + (y(j)+y(j+1))/2;
-    end
-    [XX,YY] = meshgrid(X,Y);
-    ZZ = zeros(numel(X),numel(Y));
-    for i=1:2^max_level
-        for j=1:2^max_level
-            tmp = real_space_cell(ele_dof*((i-1)*2^max_level+j-1)+1:ele_dof*((i-1)*2^max_level+j));
-            Z = L'*reshape(tmp,deg,deg)*L;
-            ZZ((j-1)*deg+1:j*deg,(i-1)*deg+1:i*deg) = Z;
+    dLcell = cell(1,ndims);
+    bDiag = cell(1,2^max_level);
+    for d=1:ndims
+        asgdata(d).nodes = zeros(deg*2^max_level,1);
+        for i=1:2^max_level
+            %Create nodes
+            asgdata(d).nodes(deg*(i-1)+1:deg*i) = ...
+                asgdata(d).dx/2*q + (asgdata(d).vec(i)+asgdata(d).vec(i))/2;
+            %Create scaled translation from modal to nodal data
+            bDiag{i} = L'*sqrt(2/asgdata(d).dx);
         end
+        dL = matlab.internal.math.blkdiag(bDiag{:});
+        dLcell{d} = dL;
     end
 
+    vals = ttm(real_tensor,dLcell,1:ndims);
+    ZZ = double(vals);
 
-    %%Plot
-    h = surf(XX,YY,ZZ,'EdgeColor','none');
-    view([0 90]); 
-    %caxis([-0.05 0.35]);
-    %zlim([-0.05 0.35]); 
-    xlim([x_min,x_max]); ylim([y_min,y_max]); colorbar;
-    %title(sprintf('time = %5.4f, dof = %d, maxlev = %d, lev = [%d,%d], thresh = %2.1e',time,dof,max_level,lev_x,lev_y,1e-6));
-    coord = get_my_realspace_coord([x_min,x_min],[x_max,x_max],hash_table);
-    z_max = max(max(get(h,'ZData')));
-    hold on
-    line(coord(:,1),coord(:,2),0*coord(:,1)+z_max,'Color','k','LineStyle',"none",'Marker',".",'MarkerSize',4);
-    hold off
+    if ndims == 2
+        [XX,YY] = meshgrid(asgdata(1).nodes,asgdata(2).nodes);
+        %%Plot
+        h = surf(XX,YY,ZZ,'EdgeColor','none');
+        view([0 90]); 
+        %caxis([-0.05 0.35]);
+        %zlim([-0.05 0.35]); 
+        xlim([asgdata(1).min,asgdata(1).max]); ylim([asgdata(2).min,asgdata(2).max]); colorbar;
+        %title(sprintf('time = %5.4f, dof = %d, maxlev = %d, lev = [%d,%d], thresh = %2.1e',time,dof,max_level,lev_x,lev_y,1e-6));
+        coord = get_my_realspace_coord([asgdata(:).min],[asgdata(:).max],hash_table);
+        z_max = max(max(get(h,'ZData')));
+        hold on
+        line(coord(:,1),coord(:,2),0*coord(:,1)+z_max,'Color','k','LineStyle',"none",'Marker',".",'MarkerSize',4);
+        hold off
+    end
 
 
 end
