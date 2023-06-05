@@ -1,4 +1,12 @@
-function [X,Y,ZZ,time,hash_table,E,phi] = wavelet_to_realspace_post(filename,max_level)
+function [nodes,ZZ,time,hash_table,asgdata] = wavelet_to_realspace_post(filename,max_level)
+    
+
+    % Check for tensor toolbox
+    assert(exist('tensor_toolbox-v3.5', 'dir'),"Tensor toolbox ..." + ...
+        "not found. Download tensor toolbox at v3.5 at ..." + ...
+        "https://gitlab.com/tensors/tensor_toolbox/-/releases/v3.5");
+    addpath('tensor_toolbox-v3.5/');
+
     ndims = h5read(filename,'/ndims');
     deg = h5read(filename,'/degree');
     if nargin == 1
@@ -17,21 +25,21 @@ function [X,Y,ZZ,time,hash_table,E,phi] = wavelet_to_realspace_post(filename,max
         asgdata(d).FMWT = OperatorTwoScale_wavelet2(double(deg),max_level);
     end
 
-%     fprintf('---- Solution Data ----------------------------\n');
-%     fprintf('-- time = %5.4f\n',time);
-%     fprintf('-- degree = %d\n',deg);
-%     fprintf('-- dof = %5d\n',dof)
-%     fprintf('-- max-level = %4d\n',max_level);
-%     fprintf('-- dim0 --\n');
-%     fprintf(' [min,max] = [%3.2f,%3.2f]\n',x_min,x_max)
-%     fprintf(' lev = %2d\n',lev_x);
-%     fprintf('-- dim1 --\n');
-%     fprintf(' [min,max] = [%3.2f,%3.2f]\n',y_min,y_max)
-%     fprintf(' lev = %2d\n',lev_y);
+    fprintf('---- Solution Data ----------------------------\n');
+    fprintf('-- time = %5.4f\n',time);
+    fprintf('-- degree = %d\n',deg);
+    fprintf('-- dof = %5d\n',dof)
+    fprintf('-- max-level = %4d\n',max_level);
+    for d=1:ndims
+        fprintf('-- dim%1d --\n',d);
+        fprintf(' [min,max] = [%3.2f,%3.2f]\n',asgdata(d).min,asgdata(d).max)
+        fprintf(' lev = %2d\n',asgdata(d).lev);
+        fprintf(' dx = %3.2f\n',asgdata(d).dx);
+    end
     
     %Get eletric field
-    E = h5read(filename,'/Efield');
-    phi = h5read(filename,'/phi');
+    %E = h5read(filename,'/Efield');
+    %phi = h5read(filename,'/phi');
 
 
     element_mat = reshape(h5read(filename,'/elements'),2*ndims,[]);
@@ -79,7 +87,6 @@ function [X,Y,ZZ,time,hash_table,E,phi] = wavelet_to_realspace_post(filename,max
     real_tensor = ttm(wave_tensor,FT,1:ndims);
 
 
-
     %Legendre polynomial values for modal to nodal transformation
     [q,~] = lgwt(double(deg),-1,1); q = q';
     L = zeros(deg,deg);
@@ -99,12 +106,14 @@ function [X,Y,ZZ,time,hash_table,E,phi] = wavelet_to_realspace_post(filename,max
             %Create scaled translation from modal to nodal data
             bDiag{i} = L'*sqrt(2/asgdata(d).dx);
         end
+        %Create block diagonal matrix
         dL = matlab.internal.math.blkdiag(bDiag{:});
         dLcell{d} = dL;
     end
 
-    vals = ttm(real_tensor,dLcell,1:ndims);
-    ZZ = double(vals);
+    quadrature_vals = ttm(real_tensor,dLcell,1:ndims);
+    ZZ = double(quadrature_vals);
+    nodes = {asgdata(:).nodes};
 
     if ndims == 2
         [XX,YY] = meshgrid(asgdata(1).nodes,asgdata(2).nodes);
