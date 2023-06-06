@@ -1,4 +1,4 @@
-function [nodes,ZZ,time,hash_table,asgdata] = wavelet_to_realspace_post(filename,max_level)
+function [nodes,real_tensor,time,hash_table,asgdata] = wavelet_to_realspace_post(filename,max_level)
     
 
     % Check for tensor toolbox
@@ -20,9 +20,9 @@ function [nodes,ZZ,time,hash_table,asgdata] = wavelet_to_realspace_post(filename
         asgdata(d).max  = h5read(filename,sprintf('/dim%1d_max',d-1)); 
         asgdata(d).lev  = h5read(filename,sprintf('/dim%1d_level',d-1));
         assert(asgdata(d).lev <= max_level);
-        asgdata(d).dx   = (asgdata(d).max-asgdata(d).min)/2.0^double(max_level);
+        asgdata(d).dx   = (asgdata(d).max-asgdata(d).min)/2.0^double(asgdata(d).lev);
         asgdata(d).vec  = asgdata(d).min:asgdata(d).dx:asgdata(d).max;
-        asgdata(d).FMWT = OperatorTwoScale_wavelet2(double(deg),max_level);
+        asgdata(d).FMWT = OperatorTwoScale_wavelet2(double(deg),asgdata(d).lev);
     end
 
     fprintf('---- Solution Data ----------------------------\n');
@@ -46,7 +46,7 @@ function [nodes,ZZ,time,hash_table,asgdata] = wavelet_to_realspace_post(filename
     for d=1:ndims
         asgdata(d).coords_lev = element_mat(d,:);
         asgdata(d).coords_pos = element_mat(d+ndims,:);
-        asgdata(d).index      = lev_cell_to_1D_index(asgdata(d).coords_lev,asgdata(d).coords_pos);
+        asgdata(d).index      = lev_cell_to_1D_index(asgdata(d).coords_lev,asgdata(d).coords_pos)';
     end
 
     active = numel(asgdata(1).coords_lev);
@@ -69,26 +69,45 @@ function [nodes,ZZ,time,hash_table,asgdata] = wavelet_to_realspace_post(filename
     end
 
     %Tensor time
-    wave_tensor = tensor(@zeros,ones(1,ndims)*double(2^max_level*deg));
+    real_tensor = tensor(@zeros,2.^([asgdata(:).lev])*deg);
+
+    perm_mat = zeros(deg^ndims,ndims);
+    perm_vec = zeros(deg^ndims,1);
+    for i=1:deg^ndims
+        val = i-1;
+        for d=1:ndims
+            mod_val = mod(val,deg);
+            perm_mat(i,d) = mod_val + 1;
+            val = (val-mod_val)/deg;
+        end
+        for d=1:ndims
+            perm_vec(i) = perm_vec(i) + (perm_mat(i,d)-1)*deg^(ndims-d);
+        end
+        perm_vec(i) = perm_vec(i)+1;
+    end
 
     dim_idx = cell(1,ndims);
     for i=1:active
         for d=1:ndims
             %Reverse order is due to reverse kron storage
-            dp = ndims-d+1;
-            dim_idx{d} = (asgdata(dp).index(i)-1)*double(deg)+1:asgdata(dp).index(i)*double(deg);
+            %dp = ndims-d+1;
+            %dim_idx{d} = (asgdata(dp).index(i)-1)*double(deg)+1:asgdata(dp).index(i)*double(deg);
+            dim_idx{d} = (asgdata(d).index(i)-1)*double(deg)+1:asgdata(d).index(i)*double(deg);
+            
         end
-        wave_tensor(dim_idx{:}) = reshape(soln((i-1)*ele_dof+1:i*ele_dof),ones(1,ndims)*double(deg));
+        %disp(dim_idx);
+        tmp = soln((i-1)*ele_dof+1:i*ele_dof);
+        real_tensor(dim_idx{:}) = reshape(tmp(perm_vec),ones(1,ndims)*double(deg));
     end
 
     % Translate from wavelets to realspace
     FT = {asgdata(:).FMWT};
     for d=1:ndims; FT{d} = FT{d}'; end
-    real_tensor = ttm(wave_tensor,FT,1:ndims);
+    real_tensor = ttm(real_tensor,FT,1:ndims);
 
 
     %Legendre polynomial values for modal to nodal transformation
-    [q,~] = lgwt(double(deg),-1,1); q = q';
+    [q,w] = lgwt(double(deg),-1,1); q = q';
     L = zeros(deg,deg);
     for i=1:deg
         tmp = legendre(i-1,q,'norm');
@@ -96,13 +115,16 @@ function [nodes,ZZ,time,hash_table,asgdata] = wavelet_to_realspace_post(filename
     end
 
     dLcell = cell(1,ndims);
-    bDiag = cell(1,2^max_level);
     for d=1:ndims
-        asgdata(d).nodes = zeros(deg*2^max_level,1);
-        for i=1:2^max_level
+        bDiag = cell(1,2^asgdata(d).lev);
+        asgdata(d).nodes = zeros(deg*2^asgdata(d).lev,1);
+        asgdata(d).weights = zeros(deg*2^asgdata(d).lev,1);
+        for i=1:2^asgdata(d).lev
             %Create nodes
             asgdata(d).nodes(deg*(i-1)+1:deg*i) = ...
-                asgdata(d).dx/2*q + (asgdata(d).vec(i)+asgdata(d).vec(i))/2;
+                asgdata(d).dx/2*q + (asgdata(d).vec(i)+asgdata(d).vec(i+1))/2;
+            %Create weights
+            asgdata(d).weights(deg*(i-1)+1:deg*i) = w*asgdata(d).dx/2;
             %Create scaled translation from modal to nodal data
             bDiag{i} = L'*sqrt(2/asgdata(d).dx);
         end
@@ -111,14 +133,16 @@ function [nodes,ZZ,time,hash_table,asgdata] = wavelet_to_realspace_post(filename
         dLcell{d} = dL;
     end
 
-    quadrature_vals = ttm(real_tensor,dLcell,1:ndims);
-    ZZ = double(quadrature_vals);
+    real_tensor = ttm(real_tensor,dLcell,1:ndims);
+    %ZZ = double(real_tensor);
     nodes = {asgdata(:).nodes};
 
     if ndims == 2
-        [XX,YY] = meshgrid(asgdata(1).nodes,asgdata(2).nodes);
+        %[XX,YY] = meshgrid(asgdata(1).nodes,asgdata(2).nodes);
+        XX = double(ttensor(tensor(1,[1 1]),{asgdata(1).nodes,ones(numel(asgdata(2).nodes),1)}));
+        YY = double(ttensor(tensor(1,[1 1]),{ones(numel(asgdata(1).nodes),1),asgdata(1).nodes}));
         %%Plot
-        h = surf(XX,YY,ZZ,'EdgeColor','none');
+        h = surf(XX,YY,real_tensor.data,'EdgeColor','none');
         view([0 90]); 
         %caxis([-0.05 0.35]);
         %zlim([-0.05 0.35]); 
