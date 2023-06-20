@@ -1,4 +1,20 @@
-function [nodes,real_tensor,time,hash_table,asgdata] = wavelet_to_realspace_post(filename,max_level)
+function [nodes,real_tensor,time,hash_table,asgdata] = wavelet_to_realspace_post(filename,opts)
+%%% Options
+
+% opts.max_level -- override built in max-level 
+%                   default from file
+% opts.quad_deg  -- override number of quadrature points per cell
+%                   default deg from file
+
+if nargin == 1
+    use_opts = false;
+else
+    use_opts = true;
+end
+
+
+
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Tensor manipulations
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -31,8 +47,11 @@ addpath('tensor_toolbox-v3.5/');
 
 ndims = h5read(filename,'/ndims');
 deg = h5read(filename,'/degree');
-if nargin == 1
-    max_level = h5read(filename,'/max_level');
+max_level = h5read(filename,'/max_level');
+if use_opts 
+    if isfield(opts,'max_level')
+        max_level = opts.max_level;
+    end
 end
 time = h5read(filename,'/time');
 dof = h5read(filename,'/dof');
@@ -115,7 +134,7 @@ for i=1:active
         %dp = ndims-d+1;
         %dim_idx{d} = (asgdata(dp).index(i)-1)*double(deg)+1:asgdata(dp).index(i)*double(deg);
         dim_idx{d} = (asgdata(d).index(i)-1)*double(deg)+1:asgdata(d).index(i)*double(deg);
-        
+
     end
     %disp(dim_idx);
     tmp = soln((i-1)*ele_dof+1:i*ele_dof);
@@ -129,8 +148,13 @@ real_tensor = ttm(real_tensor,FT,1:ndims);
 
 
 %Legendre polynomial values for modal to nodal transformation
-[q,w] = lgwt(double(deg),-1,1); q = q';
-L = zeros(deg,deg);
+if use_opts && isfield(opts,'quad_deg')
+    quad_deg = opts.quad_deg;
+else
+    quad_deg = deg;
+end
+[q,w] = lgwt(double(quad_deg),-1,1); q = q';
+L = zeros(deg,quad_deg);
 for i=1:deg
     tmp = legendre(i-1,q,'norm');
     L(i,:) = tmp(1,:);
@@ -139,14 +163,14 @@ end
 dLcell = cell(1,ndims);
 for d=1:ndims
     bDiag = cell(1,2^asgdata(d).lev);
-    asgdata(d).nodes = zeros(deg*2^asgdata(d).lev,1);
-    asgdata(d).weights = zeros(deg*2^asgdata(d).lev,1);
+    asgdata(d).nodes = zeros(quad_deg*2^asgdata(d).lev,1);
+    asgdata(d).weights = zeros(quad_deg*2^asgdata(d).lev,1);
     for i=1:2^asgdata(d).lev
         %Create nodes
-        asgdata(d).nodes(deg*(i-1)+1:deg*i) = ...
+        asgdata(d).nodes(quad_deg*(i-1)+1:quad_deg*i) = ...
             asgdata(d).dx/2*q + (asgdata(d).vec(i)+asgdata(d).vec(i+1))/2;
         %Create weights
-        asgdata(d).weights(deg*(i-1)+1:deg*i) = w*asgdata(d).dx/2;
+        asgdata(d).weights(quad_deg*(i-1)+1:quad_deg*i) = w*asgdata(d).dx/2;
         %Create scaled translation from modal to nodal data
         bDiag{i} = L'*sqrt(2/asgdata(d).dx);
     end
